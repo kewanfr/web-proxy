@@ -389,8 +389,8 @@ function resolveInput(raw) {
   if (/^[a-zA-Z0-9-]+(\.[a-zA-Z]{2,})/.test(trimmed) && !trimmed.includes(' ')) {
     return 'https://' + trimmed;
   }
-  // Sinon → recherche Google
-  return 'https://www.google.com/search?q=' + encodeURIComponent(trimmed);
+  // Sinon → recherche DuckDuckGo
+  return 'https://duckduckgo.com/?q=' + encodeURIComponent(trimmed);
 }
 
 // ── Navigation principale ────────────────────────────────────────
