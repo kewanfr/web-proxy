@@ -30,7 +30,18 @@ const HTTPS_PUBLIC_PORT = parseInt(process.env.HTTPS_PUBLIC_PORT || String(PORT)
 const SSL_KEY_PATH = process.env.SSL_KEY_PATH;
 const SSL_CERT_PATH = process.env.SSL_CERT_PATH;
 const SSL_CA_PATH = process.env.SSL_CA_PATH;
+const PROXY_DEBUG = (process.env.PROXY_DEBUG || "true").toLowerCase() === "true";
 const clientContext = new Map();
+let reqSeq = 0;
+
+function debugLog(scope, message, extra = undefined) {
+  if (!PROXY_DEBUG) return;
+  if (typeof extra === "undefined") {
+    console.log(`[${scope}] ${message}`);
+    return;
+  }
+  console.log(`[${scope}] ${message}`, extra);
+}
 
 function createAppServer() {
   if (!HTTPS_ENABLED) {
@@ -127,7 +138,9 @@ function resolveBaseOrigin(req) {
       const m = refererUrl.pathname.match(/^\/proxy\/([^/?#]+)/);
       if (m) {
         const pageUrl = decodeTargetLoose(m[1]);
-        return new URL(pageUrl).origin;
+        const origin = new URL(pageUrl).origin;
+        debugLog("RESOLVE", `base depuis referer: ${origin}`);
+        return origin;
       }
     } catch {
       // continue
@@ -139,13 +152,17 @@ function resolveBaseOrigin(req) {
   if (encodedOrigin) {
     try {
       const origin = decodeTargetLoose(encodedOrigin);
-      return new URL(origin).origin;
+      const resolved = new URL(origin).origin;
+      debugLog("RESOLVE", `base depuis cookie: ${resolved}`);
+      return resolved;
     } catch {
       // continue
     }
   }
 
-  return clientContext.get(getClientKey(req));
+  const fromMemory = clientContext.get(getClientKey(req));
+  if (fromMemory) debugLog("RESOLVE", `base depuis memoire: ${fromMemory}`);
+  return fromMemory;
 }
 
 function rewriteUrl(href, baseUrl) {
@@ -392,8 +409,8 @@ if ('serviceWorker' in navigator) {
   window.WebSocket = function(url, protocols) {
     try {
       var abs = new URL(url, resolveBase);
-      if (abs.origin === window.location.origin && !abs.pathname.startsWith('/proxy/')) {
-        return protocols ? new _WS(url, protocols) : new _WS(url);
+      if (abs.origin === window.location.origin && !abs.pathname.startsWith('/proxy/') && pageTarget) {
+        abs = new URL(abs.pathname + abs.search + abs.hash, pageTarget);
       }
       abs.protocol = abs.protocol === 'wss:' ? 'https:' : 'http:';
       var e = enc(abs.toString());
@@ -495,6 +512,7 @@ function filterHeaders(headers) {
 // ─── Route principale : /proxy/<encoded> ─────────────────────────────────────
 
 async function proxyToTarget(req, res, targetUrl) {
+  const requestId = req.__requestId || "n/a";
   try {
     const target = new URL(targetUrl);
     const targetOrigin = target.origin;
@@ -531,6 +549,8 @@ async function proxyToTarget(req, res, targetUrl) {
       redirect: "manual",
       body: hasBody ? req : undefined,
     });
+
+    debugLog("UPSTREAM", `#${requestId} ${req.method} ${req.originalUrl} -> ${targetUrl} [${upstream.status}]`);
 
     const rawSetCookies = upstream.headers.raw ? (upstream.headers.raw()["set-cookie"] || []) : [];
 
@@ -586,7 +606,7 @@ async function proxyToTarget(req, res, targetUrl) {
     upstream.body.pipe(res);
 
   } catch (err) {
-    console.error("[PROXY ERROR]", err.message);
+    console.error(`[PROXY ERROR] #${requestId}`, err.message);
     res.status(502).send(`
       <html><body style="font-family:monospace;padding:2rem">
         <h2>502 - Erreur de proxy</h2>
@@ -625,6 +645,15 @@ app.all("*", async (req, res, next) => {
 
 // ─── API navigate ─────────────────────────────────────────────────────────────
 
+app.use((req, res, next) => {
+  req.__requestId = ++reqSeq;
+  debugLog("HTTP", `#${req.__requestId} ${req.method} ${req.originalUrl}`);
+  res.on("finish", () => {
+    debugLog("HTTP", `#${req.__requestId} -> ${res.statusCode}`);
+  });
+  next();
+});
+
 app.use(express.json());
 
 app.post("/api/navigate", (req, res) => {
@@ -658,6 +687,8 @@ app.get("/", (req, res) => {
 const { server, protocol } = createAppServer();
 
 server.on("upgrade", (req, socket, head) => {
+  const requestId = `ws-${++reqSeq}`;
+  debugLog("WS", `#${requestId} upgrade ${req.url}`);
   let targetUrl;
   const match = req.url.match(/^\/proxy\/(.+)$/);
 
@@ -665,15 +696,22 @@ server.on("upgrade", (req, socket, head) => {
     try {
       targetUrl = decodeTargetLoose(match[1]);
       new URL(targetUrl);
+      debugLog("WS", `#${requestId} cible decodee: ${targetUrl}`);
     } catch {
+      debugLog("WS", `#${requestId} echec decode target`);
       return socket.destroy();
     }
   } else {
     const base = resolveBaseOrigin(req);
-    if (!base) return socket.destroy();
+    if (!base) {
+      debugLog("WS", `#${requestId} base introuvable pour ${req.url}`);
+      return socket.destroy();
+    }
     try {
       targetUrl = new URL(req.url, base).toString();
+      debugLog("WS", `#${requestId} cible resolue: ${targetUrl}`);
     } catch {
+      debugLog("WS", `#${requestId} URL invalide depuis base ${base}`);
       return socket.destroy();
     }
   }
@@ -697,6 +735,7 @@ server.on("upgrade", (req, socket, head) => {
 
   const connectAndUpgrade = (targetSocket) => {
     targetSocket.on("connect", () => {
+      debugLog("WS", `#${requestId} connect ${host}:${port}${upgradePath}`);
       targetSocket.write(
         `GET ${upgradePath} HTTP/1.1\r\n` +
         `Host: ${host}\r\n` +
@@ -716,7 +755,7 @@ server.on("upgrade", (req, socket, head) => {
     });
 
     targetSocket.on("error", (err) => {
-      console.error("[WS ERROR]", err.message);
+      console.error(`[WS ERROR] #${requestId}`, err.message);
       socket.destroy();
     });
   };
