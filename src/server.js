@@ -25,7 +25,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HTTPS_ENABLED = (process.env.HTTPS_ENABLED || "false").toLowerCase() === "true";
 const HTTP_REDIRECT_ENABLED = (process.env.HTTP_REDIRECT_ENABLED || "true").toLowerCase() === "true";
-const HTTP_REDIRECT_PORT = parseInt(process.env.HTTP_REDIRECT_PORT || "80", 10);
+const HTTP_REDIRECT_PORT = parseInt(process.env.HTTP_REDIRECT_PORT || "8080", 10);
 const HTTPS_PUBLIC_PORT = parseInt(process.env.HTTPS_PUBLIC_PORT || String(PORT), 10);
 const SSL_KEY_PATH = process.env.SSL_KEY_PATH;
 const SSL_CERT_PATH = process.env.SSL_CERT_PATH;
@@ -644,6 +644,9 @@ server.listen(PORT, () => {
 
 const redirectServer = createHttpRedirectServer();
 if (redirectServer) {
+  redirectServer.on("error", (err) => {
+    console.error(`[REDIRECT] impossible de démarrer la redirection HTTP sur :${HTTP_REDIRECT_PORT} (${err.code || err.message}). HTTPS reste actif.`);
+  });
   redirectServer.listen(HTTP_REDIRECT_PORT, () => {
     console.log(`↪ HTTP redirection active sur http://localhost:${HTTP_REDIRECT_PORT} -> https://localhost:${HTTPS_PUBLIC_PORT}`);
   });
