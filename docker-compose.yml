@@ -1,0 +1,52 @@
+services:
+  web-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: web-proxy
+    restart: unless-stopped
+
+    ports:
+      # Port exposé sur l'hôte → ton reverse proxy pointera ici
+      # Modifie le côté gauche si nécessaire (ex: "8080:3000")
+      - "${HOST_PORT:-3000}:3000"
+
+    environment:
+      # Port interne Node.js (ne pas changer sauf si tu modifies le Dockerfile)
+      PORT: 3000
+      NODE_ENV: production
+
+    # Limite les ressources pour un VPS modeste
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+
+    # Healthcheck : vérifie que le serveur répond
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Réseau dédié (utile si tu ajoutes un reverse proxy dans le même compose)
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    name: proxy-net
+    # Utilise "external: true" si ton reverse proxy tourne dans un autre stack
+    # et partage déjà ce réseau Docker.
+    # external: true

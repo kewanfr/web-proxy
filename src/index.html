@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WebProxy</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #0d0d0f;
+    --surface: #141417;
+    --border: #232329;
+    --accent: #00e5a0;
+    --accent-dim: rgba(0,229,160,0.12);
+    --accent-glow: rgba(0,229,160,0.3);
+    --text: #e8e8ef;
+    --muted: #6b6b7a;
+    --bar-h: 56px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 14px;
+    overflow: hidden;
+  }
+
+  /* ── Barre de navigation ─────────────────────────────────────── */
+  #nav-bar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--bar-h);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px;
+    z-index: 9999;
+    backdrop-filter: blur(12px);
+  }
+
+  #logo {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  #logo svg { width: 18px; height: 18px; }
+
+  #btn-back, #btn-forward, #btn-reload {
+    width: 30px; height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  #btn-back:hover, #btn-forward:hover, #btn-reload:hover {
+    color: var(--text);
+    border-color: var(--accent);
+    background: var(--accent-dim);
+  }
+  #btn-back:disabled, #btn-forward:disabled { opacity: 0.3; cursor: default; }
+  #btn-back:disabled:hover, #btn-forward:disabled:hover {
+    color: var(--muted); border-color: var(--border); background: transparent;
+  }
+
+  #url-wrap {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  #shield {
+    position: absolute;
+    left: 10px;
+    color: var(--accent);
+    display: flex;
+    pointer-events: none;
+  }
+
+  #url-input {
+    width: 100%;
+    height: 34px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    padding: 0 36px 0 34px;
+    outline: none;
+    transition: border-color .2s, box-shadow .2s;
+    caret-color: var(--accent);
+  }
+  #url-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+  }
+  #url-input::placeholder { color: var(--muted); }
+
+  #btn-go {
+    position: absolute;
+    right: 6px;
+    width: 24px; height: 24px;
+    background: var(--accent);
+    border: none;
+    border-radius: 5px;
+    color: #000;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity .15s;
+  }
+  #btn-go:hover { opacity: .85; }
+
+  #status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+    transition: background .3s;
+  }
+  #status-dot.loading { background: #f5a623; animation: pulse 1s infinite; }
+  #status-dot.ok      { background: var(--accent); animation: none; }
+  #status-dot.err     { background: #ff4d4d; animation: none; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.3; }
+  }
+
+  /* ── Progress bar ────────────────────────────────────────────── */
+  #progress {
+    position: fixed;
+    top: var(--bar-h);
+    left: 0;
+    height: 2px;
+    width: 0%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent-glow);
+    transition: width .25s ease, opacity .3s;
+    z-index: 9998;
+    opacity: 0;
+  }
+  #progress.active { opacity: 1; }
+
+  /* ── Iframe ──────────────────────────────────────────────────── */
+  #frame-wrap {
+    position: fixed;
+    top: var(--bar-h);
+    left: 0; right: 0; bottom: 0;
+  }
+
+  #proxy-frame {
+    width: 100%; height: 100%;
+    border: none;
+    background: #fff;
+    display: none;
+  }
+
+  /* ── Page d'accueil ─────────────────────────────────────────── */
+  #home {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 0;
+    animation: fadeIn .4s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  #home-logo {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 38px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: -.02em;
+    margin-bottom: 6px;
+  }
+
+  #home-logo span {
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  #home-sub {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 36px;
+    letter-spacing: .02em;
+  }
+
+  #home-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    max-width: 500px;
+    width: 100%;
+    padding: 0 24px;
+  }
+
+  .quick-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    padding: 10px 8px;
+    cursor: pointer;
+    text-align: center;
+    transition: border-color .2s, background .2s, color .2s;
+  }
+  .quick-btn:hover {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  #home-features {
+    margin-top: 40px;
+    display: flex;
+    gap: 20px;
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+  .feat {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .feat-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+  }
+
+  /* ── Scrollbar ───────────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* bg grain */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
+    pointer-events: none;
+    opacity: .4;
+    z-index: 0;
+  }
+</style>
+</head>
+<body>
+
+<!-- Barre de navigation -->
+<nav id="nav-bar">
+  <div id="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+    PROXY
+  </div>
+
+  <button id="btn-back" title="Précédent" disabled>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+  </button>
+  <button id="btn-forward" title="Suivant" disabled>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+  </button>
+  <button id="btn-reload" title="Recharger">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+  </button>
+
+  <div id="url-wrap">
+    <span id="shield">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    </span>
+    <input id="url-input" type="text" placeholder="Entrer une URL ou un mot-clé..." autocomplete="off" spellcheck="false" />
+    <button id="btn-go" title="Naviguer">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+  </div>
+
+  <div id="status-dot" title="Prêt"></div>
+</nav>
+
+<!-- Barre de progression -->
+<div id="progress"></div>
+
+<!-- Zone de contenu -->
+<div id="frame-wrap">
+  <div id="home">
+    <div id="home-logo">web<span>/proxy</span></div>
+    <div id="home-sub">Toutes les requêtes transitent par le serveur.</div>
+
+    <div id="home-grid">
+      <button class="quick-btn" data-url="https://wikipedia.org">wikipedia.org</button>
+      <button class="quick-btn" data-url="https://github.com">github.com</button>
+      <button class="quick-btn" data-url="https://news.ycombinator.com">HackerNews</button>
+      <button class="quick-btn" data-url="https://lobste.rs">lobste.rs</button>
+      <button class="quick-btn" data-url="https://lemonde.fr">lemonde.fr</button>
+      <button class="quick-btn" data-url="https://reddit.com">reddit.com</button>
+    </div>
+
+    <div id="home-features">
+      <div class="feat"><div class="feat-dot"></div> Requêtes côté serveur</div>
+      <div class="feat"><div class="feat-dot"></div> URLs chiffrées en base64</div>
+      <div class="feat"><div class="feat-dot"></div> Réécriture du HTML/CSS</div>
+    </div>
+  </div>
+
+  <iframe id="proxy-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" referrerpolicy="no-referrer"></iframe>
+</div>
+
+<script>
+const urlInput   = document.getElementById('url-input');
+const btnGo      = document.getElementById('btn-go');
+const btnBack    = document.getElementById('btn-back');
+const btnForward = document.getElementById('btn-forward');
+const btnReload  = document.getElementById('btn-reload');
+const frame      = document.getElementById('proxy-frame');
+const home       = document.getElementById('home');
+const dot        = document.getElementById('status-dot');
+const progress   = document.getElementById('progress');
+
+let history_stack = [];
+let history_pos   = -1;
+let navigating    = false;
+
+// ── Encodage base64url ────────────────────────────────────────────
+function encodeB64(str) {
+  return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g,
+    (m, p) => String.fromCharCode('0x'+p)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+// ── Résolution de l'URL saisie ───────────────────────────────────
+function resolveInput(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Si c'est une URL complète
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  // Si ça ressemble à un domaine
+  if (/^[a-zA-Z0-9-]+(\.[a-zA-Z]{2,})/.test(trimmed) && !trimmed.includes(' ')) {
+    return 'https://' + trimmed;
+  }
+  // Sinon → recherche Google
+  return 'https://www.google.com/search?q=' + encodeURIComponent(trimmed);
+}
+
+// ── Navigation principale ────────────────────────────────────────
+function navigate(url, pushState = true) {
+  if (!url) return;
+  const proxyPath = '/proxy/' + btoa(url).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  
+  // Afficher la barre de progression
+  progress.style.width = '0%';
+  progress.classList.add('active');
+  let prog = 0;
+  const progInterval = setInterval(() => {
+    prog = Math.min(prog + Math.random() * 15, 85);
+    progress.style.width = prog + '%';
+  }, 200);
+
+  dot.className = 'loading';
+  dot.title = 'Chargement…';
+
+  // Afficher l'iframe, cacher home
+  home.style.display = 'none';
+  frame.style.display = 'block';
+
+  // Mettre à jour l'input
+  urlInput.value = url;
+
+  // Historique interne
+  if (pushState) {
+    history_stack = history_stack.slice(0, history_pos + 1);
+    history_stack.push(url);
+    history_pos = history_stack.length - 1;
+  }
+  updateNavButtons();
+
+  navigating = true;
+  frame.src = proxyPath;
+
+  frame.onload = () => {
+    clearInterval(progInterval);
+    progress.style.width = '100%';
+    setTimeout(() => { progress.classList.remove('active'); }, 350);
+    dot.className = 'ok';
+    dot.title = 'OK';
+
+    // Essayer de lire l'URL courante depuis le frame
+    try {
+      const iUrl = frame.contentWindow.location.href;
+      if (iUrl && iUrl !== 'about:blank' && iUrl !== window.location.origin + '/') {
+        // Décoder l'URL proxy pour afficher l'URL réelle
+        const m = iUrl.match(/\/proxy\/([^?#]+)/);
+        if (m) {
+          try {
+            const decoded = atob(m[1].replace(/-/g,'+').replace(/_/g,'/'));
+            urlInput.value = decoded;
+            // Sync historique
+            if (pushState) {
+              history_stack[history_pos] = decoded;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+    navigating = false;
+  };
+
+  frame.onerror = () => {
+    clearInterval(progInterval);
+    progress.classList.remove('active');
+    dot.className = 'err';
+    dot.title = 'Erreur';
+    navigating = false;
+  };
+}
+
+function updateNavButtons() {
+  btnBack.disabled    = history_pos <= 0;
+  btnForward.disabled = history_pos >= history_stack.length - 1;
+}
+
+// ── Écoute des messages du frame (navigation interne) ────────────
+window.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'navigate') {
+    navigate(e.data.url);
+  }
+});
+
+// ── Observer les changements d'URL de l'iframe ───────────────────
+let lastFrameUrl = '';
+setInterval(() => {
+  if (!frame.style.display || frame.style.display === 'none') return;
+  try {
+    const href = frame.contentWindow.location.href;
+    if (href && href !== lastFrameUrl) {
+      lastFrameUrl = href;
+      const m = href.match(/\/proxy\/([^?#\s]+)/);
+      if (m) {
+        try {
+          const decoded = atob(m[1].replace(/-/g,'+').replace(/_/g,'/'));
+          if (decoded !== history_stack[history_pos]) {
+            urlInput.value = decoded;
+            history_stack = history_stack.slice(0, history_pos + 1);
+            history_stack.push(decoded);
+            history_pos++;
+            updateNavButtons();
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+}, 300);
+
+// ── Événements ──────────────────────────────────────────────────
+urlInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const resolved = resolveInput(urlInput.value);
+    if (resolved) navigate(resolved);
+  }
+});
+
+btnGo.addEventListener('click', () => {
+  const resolved = resolveInput(urlInput.value);
+  if (resolved) navigate(resolved);
+});
+
+btnBack.addEventListener('click', () => {
+  if (history_pos > 0) {
+    history_pos--;
+    navigate(history_stack[history_pos], false);
+    updateNavButtons();
+  }
+});
+
+btnForward.addEventListener('click', () => {
+  if (history_pos < history_stack.length - 1) {
+    history_pos++;
+    navigate(history_stack[history_pos], false);
+    updateNavButtons();
+  }
+});
+
+btnReload.addEventListener('click', () => {
+  if (history_pos >= 0) {
+    navigate(history_stack[history_pos], false);
+  }
+});
+
+// Focus URL sur Ctrl+L / Cmd+L
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+    e.preventDefault();
+    urlInput.focus();
+    urlInput.select();
+  }
+});
+
+// Quick links
+document.querySelectorAll('.quick-btn').forEach(btn => {
+  btn.addEventListener('click', () => navigate(btn.dataset.url));
+});
+</script>
+</body>
+</html>
