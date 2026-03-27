@@ -7,8 +7,13 @@
  * Accès        : http://localhost:3000
  */
 
-const express = require("express");
-const path = require("path");
+import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import fetch from "node-fetch";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -201,8 +206,6 @@ app.get("/proxy/:encoded(*)", async (req, res) => {
   }
 
   try {
-    const fetch = (await import("node-fetch")).default;
-
     const upstreamHeaders = filterHeaders(req.headers);
     upstreamHeaders["host"] = new URL(targetUrl).host;
 
