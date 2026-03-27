@@ -10,6 +10,9 @@ services:
       # Port exposé sur l'hôte → ton reverse proxy pointera ici
       # Modifie le côté gauche si nécessaire (ex: "8080:3000")
       - "${HOST_PORT:-3000}:3000"
+
+      - "${HTTPS_PUBLIC_PORT:-443}:${HTTPS_PUBLIC_PORT:-443}"
+      
       # Optionnel: exposer aussi le port HTTP de redirection
       # - "${HOST_PORT_HTTP:-80}:${HTTP_REDIRECT_PORT:-80}"
 
