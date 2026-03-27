@@ -15,6 +15,14 @@ services:
       # Port interne Node.js (ne pas changer sauf si tu modifies le Dockerfile)
       PORT: 3000
       NODE_ENV: production
+      HTTPS_ENABLED: ${HTTPS_ENABLED:-false}
+      SSL_KEY_PATH: ${SSL_KEY_PATH:-/certs/privkey.pem}
+      SSL_CERT_PATH: ${SSL_CERT_PATH:-/certs/fullchain.pem}
+      SSL_CA_PATH: ${SSL_CA_PATH:-}
+
+    # Monter les certificats dans le conteneur (lecture seule)
+    # volumes:
+    #   - ./certs:/certs:ro
 
     # Limite les ressources pour un VPS modeste
     deploy:
@@ -28,7 +36,7 @@ services:
 
     # Healthcheck : vérifie que le serveur répond
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      test: ["CMD-SHELL", "if [ \"$HTTPS_ENABLED\" = \"true\" ]; then wget --no-check-certificate -qO- https://localhost:3000/; else wget -qO- http://localhost:3000/; fi"]
       interval: 30s
       timeout: 5s
       retries: 3

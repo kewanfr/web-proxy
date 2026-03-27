@@ -81,6 +81,36 @@ networks:
 
 Et pointe vers `http://web-proxy:3000`.
 
+## HTTPS direct (certificat dans l'app)
+
+Tu peux activer HTTPS directement dans `web-proxy` avec un certificat PEM.
+
+Dans `.env` :
+
+```bash
+HTTPS_ENABLED=true
+SSL_KEY_PATH=/certs/privkey.pem
+SSL_CERT_PATH=/certs/fullchain.pem
+# SSL_CA_PATH=/certs/chain.pem   # optionnel
+```
+
+Dans `docker-compose.yml`, monte le dossier certs (lecture seule) :
+
+```yaml
+volumes:
+  - ./certs:/certs:ro
+```
+
+Puis relance :
+
+```bash
+docker compose up -d --build
+```
+
+Accès : `https://localhost:3000`
+
+Remarque: avec un certificat auto-signé, le navigateur affichera un avertissement de sécurité.
+
 ## Commandes utiles
 
 ```bash

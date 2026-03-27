@@ -8,10 +8,12 @@
  */
 
 import express from "express";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fetch from "node-fetch";
 import http from "http";
+import https from "node:https";
 import net from "net";
 import tls from "tls";
 import { URL } from "url";
@@ -21,7 +23,42 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HTTPS_ENABLED = (process.env.HTTPS_ENABLED || "false").toLowerCase() === "true";
+const SSL_KEY_PATH = process.env.SSL_KEY_PATH;
+const SSL_CERT_PATH = process.env.SSL_CERT_PATH;
+const SSL_CA_PATH = process.env.SSL_CA_PATH;
 const clientContext = new Map();
+
+function createAppServer() {
+  if (!HTTPS_ENABLED) {
+    return { server: http.createServer(app), protocol: "http" };
+  }
+
+  if (!SSL_KEY_PATH || !SSL_CERT_PATH) {
+    throw new Error("HTTPS activé mais SSL_KEY_PATH/SSL_CERT_PATH manquants.");
+  }
+
+  const keyPath = path.resolve(SSL_KEY_PATH);
+  const certPath = path.resolve(SSL_CERT_PATH);
+
+  if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
+    throw new Error(`Certificat introuvable. key=${keyPath} cert=${certPath}`);
+  }
+
+  const tlsOptions = {
+    key: fs.readFileSync(keyPath),
+    cert: fs.readFileSync(certPath),
+  };
+
+  if (SSL_CA_PATH) {
+    const caPath = path.resolve(SSL_CA_PATH);
+    if (fs.existsSync(caPath)) {
+      tlsOptions.ca = fs.readFileSync(caPath);
+    }
+  }
+
+  return { server: https.createServer(tlsOptions, app), protocol: "https" };
+}
 
 function getClientKey(req) {
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
@@ -447,7 +484,7 @@ app.get("/", (req, res) => {
 
 // ─── Serveur HTTP + WebSocket upgrade ────────────────────────────────────────
 
-const server = http.createServer(app);
+const { server, protocol } = createAppServer();
 
 server.on("upgrade", (req, socket, head) => {
   const match = req.url.match(/^\/proxy\/(.+)$/);
@@ -510,5 +547,5 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n🔒 Web Proxy démarré sur http://localhost:${PORT}\n`);
+  console.log(`\n🔒 Web Proxy démarré sur ${protocol}://localhost:${PORT}\n`);
 });
