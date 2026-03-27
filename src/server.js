@@ -258,9 +258,24 @@ if ('serviceWorker' in navigator) {
     if (!url) return url;
     if (url.startsWith('/proxy/') || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) return url;
     try {
-      var abs = new URL(url, base || resolveBase).toString();
-      if (abs.startsWith(window.location.origin)) return url;
-      var e = enc(abs);
+      var absUrl = new URL(url, base || resolveBase);
+
+      // Si le code construit une URL absolue sur le domaine du proxy,
+      // on la rebase vers la vraie cible en cours pour eviter les fuites locales.
+      if (absUrl.origin === window.location.origin) {
+        if (absUrl.pathname.startsWith('/proxy/') || absUrl.pathname.startsWith('/api/navigate')) {
+          return absUrl.toString();
+        }
+        if (pageTarget) {
+          absUrl = new URL(absUrl.pathname + absUrl.search + absUrl.hash, pageTarget);
+        }
+      }
+
+      // Uniformiser ws/wss vers http/https avant encodage.
+      if (absUrl.protocol === 'ws:') absUrl.protocol = 'http:';
+      if (absUrl.protocol === 'wss:') absUrl.protocol = 'https:';
+
+      var e = enc(absUrl.toString());
       return e ? '/proxy/' + e : url;
     } catch(err) { return url; }
   }
@@ -663,9 +678,9 @@ server.on("upgrade", (req, socket, head) => {
     }
   }
 
-  // Convertir https/http → wss/ws
+  // Convertir http/https/ws/wss -> ws/wss
   const wsUrl = new URL(targetUrl);
-  wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
+  wsUrl.protocol = (wsUrl.protocol === "https:" || wsUrl.protocol === "wss:") ? "wss:" : "ws:";
 
   const isSecure = wsUrl.protocol === "wss:";
   const port = parseInt(wsUrl.port) || (isSecure ? 443 : 80);
