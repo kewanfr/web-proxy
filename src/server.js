@@ -80,6 +80,21 @@ function rewriteHtml(html, baseUrl) {
     return `${attr}=${quote}${rewriteCss(css, baseUrl)}${quote}`;
   });
 
+  // Désactiver les ServiceWorkers
+const swBlock = `
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
+  Object.defineProperty(navigator, 'serviceWorker', { get: () => ({ register: () => Promise.reject('blocked'), getRegistrations: () => Promise.resolve([]) }) });
+}
+</script>`;
+
+  if (html.match(/<head[^>]*>/i)) {
+    html = html.replace(/(<head[^>]*>)/i, "$1" + swBlock);
+  } else {
+    html = swBlock + html;
+  }
+
   const injectedScript = `
 <script>
 (function() {
@@ -189,7 +204,7 @@ function filterHeaders(headers) {
 
 // ─── Route principale : /proxy/<encoded> ─────────────────────────────────────
 
-app.get("/proxy/:encoded(*)", async (req, res) => {
+app.all("/proxy/:encoded(*)", async (req, res) => {
   let targetUrl;
   try {
     targetUrl = decodeTarget(match[1]); // base64url natif (côté serveur)
