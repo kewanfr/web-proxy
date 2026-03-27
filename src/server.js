@@ -178,10 +178,12 @@ function rewriteHtml(html, baseUrl) {
 
 // ─── Headers à filtrer (hop-by-hop) ──────────────────────────────────────────
 
+
 const HOP_BY_HOP = new Set([
   "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
   "te", "trailers", "transfer-encoding", "upgrade",
-  "host", "content-length", // recalculés automatiquement
+  "host", "content-length",
+  "content-encoding",   // ← ajouter cette ligne
 ]);
 
 function filterHeaders(headers) {
