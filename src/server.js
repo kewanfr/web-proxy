@@ -102,6 +102,35 @@ function parseCookies(req) {
   return out;
 }
 
+function resolveBaseOrigin(req) {
+  const referer = req.headers?.referer;
+  if (referer) {
+    try {
+      const refererUrl = new URL(referer);
+      const m = refererUrl.pathname.match(/^\/proxy\/([^/?#]+)/);
+      if (m) {
+        const pageUrl = decodeTargetLoose(m[1]);
+        return new URL(pageUrl).origin;
+      }
+    } catch {
+      // continue
+    }
+  }
+
+  const cookies = parseCookies(req);
+  const encodedOrigin = cookies.__proxy_origin;
+  if (encodedOrigin) {
+    try {
+      const origin = decodeTargetLoose(encodedOrigin);
+      return new URL(origin).origin;
+    } catch {
+      // continue
+    }
+  }
+
+  return clientContext.get(getClientKey(req));
+}
+
 function rewriteUrl(href, baseUrl) {
   if (!href || href.startsWith("data:") || href.startsWith("blob:") || href.startsWith("javascript:") || href.startsWith("#") || href.startsWith("mailto:")) {
     return href;
@@ -406,46 +435,7 @@ app.all("*", async (req, res, next) => {
     return next();
   }
 
-  const referer = req.get("referer");
-  let base;
-
-  if (referer) {
-    let refererUrl;
-    try {
-      refererUrl = new URL(referer);
-    } catch {
-      refererUrl = null;
-    }
-
-    if (refererUrl) {
-      const m = refererUrl.pathname.match(/^\/proxy\/([^/?#]+)/);
-      if (m) {
-        try {
-          const pageUrl = decodeTargetLoose(m[1]);
-          base = new URL(pageUrl).origin;
-        } catch {
-          base = undefined;
-        }
-      }
-    }
-  }
-
-  if (!base) {
-    const cookies = parseCookies(req);
-    const encodedOrigin = cookies.__proxy_origin;
-    if (encodedOrigin) {
-      try {
-        const origin = decodeTargetLoose(encodedOrigin);
-        base = new URL(origin).origin;
-      } catch {
-        base = undefined;
-      }
-    }
-  }
-
-  if (!base) {
-    base = clientContext.get(getClientKey(req));
-  }
+  const base = resolveBaseOrigin(req);
 
   if (!base) return next();
   const targetUrl = new URL(req.originalUrl, base).toString();
@@ -487,15 +477,24 @@ app.get("/", (req, res) => {
 const { server, protocol } = createAppServer();
 
 server.on("upgrade", (req, socket, head) => {
-  const match = req.url.match(/^\/proxy\/(.+)$/);
-  if (!match) return socket.destroy();
-
   let targetUrl;
-  try {
-    targetUrl = decodeTarget(match[1]);
-    new URL(targetUrl);
-  } catch {
-    return socket.destroy();
+  const match = req.url.match(/^\/proxy\/(.+)$/);
+
+  if (match) {
+    try {
+      targetUrl = decodeTargetLoose(match[1]);
+      new URL(targetUrl);
+    } catch {
+      return socket.destroy();
+    }
+  } else {
+    const base = resolveBaseOrigin(req);
+    if (!base) return socket.destroy();
+    try {
+      targetUrl = new URL(req.url, base).toString();
+    } catch {
+      return socket.destroy();
+    }
   }
 
   // Convertir https/http → wss/ws
@@ -513,12 +512,14 @@ server.on("upgrade", (req, socket, head) => {
     .filter(([k]) => !skipHeaders.has(k.toLowerCase()))
     .map(([k, v]) => `${k}: ${v}`)
     .join("\r\n");
+  const originHeader = `Origin: ${wsUrl.origin}\r\n`;
 
   const connectAndUpgrade = (targetSocket) => {
     targetSocket.on("connect", () => {
       targetSocket.write(
         `GET ${upgradePath} HTTP/1.1\r\n` +
         `Host: ${host}\r\n` +
+        originHeader +
         `${headerLines}\r\n` +
         `\r\n`
       );
