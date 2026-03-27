@@ -261,7 +261,10 @@ function getWorkerBootstrap() {
         if (abs.protocol === 'ws:') abs.protocol = 'http:';
         if (abs.protocol === 'wss:') abs.protocol = 'https:';
         var e = enc(abs.toString());
-        if (e) url = self.location.origin + '/proxy/' + e;
+        if (e) {
+          var _wsProto = self.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          url = _wsProto + '//' + self.location.host + '/proxy/' + e;
+        }
       } catch (e) {}
       return protocols ? new _WS(url, protocols) : new _WS(url);
     };
@@ -515,7 +518,7 @@ if ('serviceWorker' in navigator) {
       if (abs.protocol === 'ws:') abs.protocol = 'http:';
       if (abs.protocol === 'wss:') abs.protocol = 'https:';
       var e = enc(abs.toString());
-      if (e) url = window.location.origin + '/proxy/' + e;
+      if (e) { var _wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; url = _wsProto + '//' + window.location.host + '/proxy/' + e; }
     } catch(err) {}
     return protocols ? new _WS(url, protocols) : new _WS(url);
   };
