@@ -24,6 +24,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HTTPS_ENABLED = (process.env.HTTPS_ENABLED || "false").toLowerCase() === "true";
+const HTTP_REDIRECT_ENABLED = (process.env.HTTP_REDIRECT_ENABLED || "true").toLowerCase() === "true";
+const HTTP_REDIRECT_PORT = parseInt(process.env.HTTP_REDIRECT_PORT || "80", 10);
+const HTTPS_PUBLIC_PORT = parseInt(process.env.HTTPS_PUBLIC_PORT || String(PORT), 10);
 const SSL_KEY_PATH = process.env.SSL_KEY_PATH;
 const SSL_CERT_PATH = process.env.SSL_CERT_PATH;
 const SSL_CA_PATH = process.env.SSL_CA_PATH;
@@ -58,6 +61,20 @@ function createAppServer() {
   }
 
   return { server: https.createServer(tlsOptions, app), protocol: "https" };
+}
+
+function createHttpRedirectServer() {
+  if (!HTTPS_ENABLED || !HTTP_REDIRECT_ENABLED) return null;
+
+  return http.createServer((req, res) => {
+    const hostHeader = req.headers.host || "localhost";
+    const hostname = hostHeader.split(":")[0];
+    const httpsPortPart = HTTPS_PUBLIC_PORT === 443 ? "" : `:${HTTPS_PUBLIC_PORT}`;
+    const location = `https://${hostname}${httpsPortPart}${req.url || "/"}`;
+    res.statusCode = 308;
+    res.setHeader("Location", location);
+    res.end("Redirecting to HTTPS");
+  });
 }
 
 function getClientKey(req) {
@@ -230,6 +247,53 @@ if ('serviceWorker' in navigator) {
     } catch(err) { return url; }
   }
 
+  function proxySrcset(value, base) {
+    try {
+      return value.split(',').map(function(part) {
+        var p = part.trim();
+        if (!p) return p;
+        var i = p.indexOf(' ');
+        if (i === -1) return proxyUrl(p, base);
+        return proxyUrl(p.slice(0, i), base) + p.slice(i);
+      }).join(', ');
+    } catch (e) {
+      return value;
+    }
+  }
+
+  function rewriteElementAttributes(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('[src], [href], form[action], [srcset]').forEach(function(el) {
+      if (el.hasAttribute('src')) {
+        el.setAttribute('src', proxyUrl(el.getAttribute('src')));
+      }
+      if (el.hasAttribute('href')) {
+        el.setAttribute('href', proxyUrl(el.getAttribute('href')));
+      }
+      if (el.hasAttribute('action')) {
+        el.setAttribute('action', proxyUrl(el.getAttribute('action')));
+      }
+      if (el.hasAttribute('srcset')) {
+        el.setAttribute('srcset', proxySrcset(el.getAttribute('srcset')));
+      }
+    });
+  }
+
+  var _setAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function(name, value) {
+    try {
+      var n = String(name || '').toLowerCase();
+      if (typeof value === 'string') {
+        if (n === 'src' || n === 'href' || n === 'action') {
+          value = proxyUrl(value);
+        } else if (n === 'srcset') {
+          value = proxySrcset(value);
+        }
+      }
+    } catch (e) {}
+    return _setAttribute.call(this, name, value);
+  };
+
   /* ── XHR ── */
   var _open = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {
@@ -285,6 +349,33 @@ if ('serviceWorker' in navigator) {
       if (url) url = proxyUrl(url);
       return orig.call(this, st, ti, url);
     };
+  });
+
+  rewriteElementAttributes(document);
+  var mo = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      if (m.type === 'attributes' && m.target && m.attributeName) {
+        var attr = m.attributeName.toLowerCase();
+        if (attr === 'src' || attr === 'href' || attr === 'action') {
+          m.target.setAttribute(attr, proxyUrl(m.target.getAttribute(attr)));
+        } else if (attr === 'srcset') {
+          m.target.setAttribute('srcset', proxySrcset(m.target.getAttribute('srcset')));
+        }
+      }
+      if (m.type === 'childList') {
+        m.addedNodes.forEach(function(node) {
+          if (node.nodeType === 1) {
+            rewriteElementAttributes(node);
+          }
+        });
+      }
+    });
+  });
+  mo.observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['src', 'href', 'action', 'srcset']
   });
 })();
 </script>`;
@@ -550,3 +641,10 @@ server.on("upgrade", (req, socket, head) => {
 server.listen(PORT, () => {
   console.log(`\n🔒 Web Proxy démarré sur ${protocol}://localhost:${PORT}\n`);
 });
+
+const redirectServer = createHttpRedirectServer();
+if (redirectServer) {
+  redirectServer.listen(HTTP_REDIRECT_PORT, () => {
+    console.log(`↪ HTTP redirection active sur http://localhost:${HTTP_REDIRECT_PORT} -> https://localhost:${HTTPS_PUBLIC_PORT}`);
+  });
+}

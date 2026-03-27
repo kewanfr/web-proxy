@@ -297,8 +297,7 @@
   </button>
 
   <div id="url-wrap">
-    <!-- return to home on click -->
-    <span id="shield" onclick="window.location.href = '/';">
+    <span id="shield">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
     </span>
     <input id="url-input" type="text" placeholder="Entrer une URL ou un mot-clé..." autocomplete="off" spellcheck="false" />
@@ -341,6 +340,8 @@
 
 <script>
 const urlInput   = document.getElementById('url-input');
+const logo       = document.getElementById('logo');
+const shield     = document.getElementById('shield');
 const btnGo      = document.getElementById('btn-go');
 const btnBack    = document.getElementById('btn-back');
 const btnForward = document.getElementById('btn-forward');
@@ -378,6 +379,21 @@ function rememberCurrentUrl(url) {
     localStorage.setItem('proxy:lastUrl', url);
     history.replaceState(null, '', '/#' + encodeURIComponent(url));
   } catch {}
+}
+
+function goHome() {
+  frame.style.display = 'none';
+  home.style.display = 'flex';
+  dot.className = '';
+  dot.title = 'Prêt';
+  progress.classList.remove('active');
+  progress.style.width = '0%';
+  urlInput.value = '';
+  try {
+    localStorage.removeItem('proxy:lastUrl');
+    history.replaceState(null, '', '/');
+  } catch {}
+  updateNavButtons();
 }
 
 // ── Résolution de l'URL saisie ───────────────────────────────────
@@ -512,12 +528,14 @@ urlInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     const resolved = resolveInput(urlInput.value);
     if (resolved) navigate(resolved);
+    else goHome();
   }
 });
 
 btnGo.addEventListener('click', () => {
   const resolved = resolveInput(urlInput.value);
   if (resolved) navigate(resolved);
+  else goHome();
 });
 
 btnBack.addEventListener('click', () => {
@@ -529,13 +547,7 @@ btnBack.addEventListener('click', () => {
   }
 
   // S'il n'y a pas d'historique precedent, retour a l'accueil.
-  frame.style.display = 'none';
-  home.style.display = 'flex';
-  dot.className = '';
-  dot.title = 'Prêt';
-  progress.classList.remove('active');
-  progress.style.width = '0%';
-  updateNavButtons();
+  goHome();
 });
 
 btnForward.addEventListener('click', () => {
@@ -562,6 +574,9 @@ document.addEventListener('keydown', (e) => {
     urlInput.select();
   }
 });
+
+logo.addEventListener('click', goHome);
+shield.addEventListener('click', goHome);
 
 // Quick links
 document.querySelectorAll('.quick-btn').forEach(btn => {

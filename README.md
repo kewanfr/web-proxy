@@ -111,6 +111,43 @@ Accès : `https://localhost:3000`
 
 Remarque: avec un certificat auto-signé, le navigateur affichera un avertissement de sécurité.
 
+### Obtenir un certificat Let's Encrypt avec Certbot
+
+Commande simple (méthode standalone) :
+
+```bash
+sudo certbot certonly --standalone -d proxy.tondomaine.com
+```
+
+Renouvellement (test + réel) :
+
+```bash
+sudo certbot renew --dry-run
+sudo certbot renew
+```
+
+Les fichiers générés seront généralement ici :
+
+```bash
+/etc/letsencrypt/live/proxy.tondomaine.com/privkey.pem
+/etc/letsencrypt/live/proxy.tondomaine.com/fullchain.pem
+```
+
+Exemple d'utilisation avec Docker :
+
+```yaml
+volumes:
+  - /etc/letsencrypt/live/proxy.tondomaine.com:/certs:ro
+```
+
+Puis dans `.env` :
+
+```bash
+HTTPS_ENABLED=true
+SSL_KEY_PATH=/certs/privkey.pem
+SSL_CERT_PATH=/certs/fullchain.pem
+```
+
 ## Commandes utiles
 
 ```bash
