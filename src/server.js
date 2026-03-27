@@ -192,10 +192,19 @@ function filterHeaders(headers) {
 app.get("/proxy/:encoded(*)", async (req, res) => {
   let targetUrl;
   try {
-    targetUrl = decodeTarget(req.params.encoded);
+    targetUrl = decodeTarget(match[1]); // base64url natif (côté serveur)
     new URL(targetUrl);
   } catch {
-    return res.status(400).send("URL invalide.");
+    try {
+      // Fallback : encodage btoa client (base64 standard avec - et _)
+      const b64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
+      targetUrl = decodeURIComponent(
+        atob(b64).split('').map(c => '%' + c.charCodeAt(0).toString(16).padStart(2,'0')).join('')
+      );
+      new URL(targetUrl);
+    } catch {
+      return socket.destroy();
+    }
   }
 
   try {
