@@ -27,8 +27,8 @@ services:
       SSL_CA_PATH: ${SSL_CA_PATH:-}
 
     # Monter les certificats dans le conteneur (lecture seule)
-    # volumes:
-    #   - ./certs:/certs:ro
+    volumes:
+      - ./certs:/certs:ro
 
     # Limite les ressources pour un VPS modeste
     deploy:
