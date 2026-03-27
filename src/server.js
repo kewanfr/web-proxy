@@ -32,6 +32,19 @@ function decodeTarget(encoded) {
   return Buffer.from(encoded, "base64url").toString("utf8");
 }
 
+function decodeTargetLoose(encoded) {
+  try {
+    const url = decodeTarget(encoded);
+    new URL(url);
+    return url;
+  } catch {
+    const b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const url = Buffer.from(b64, "base64").toString("utf8");
+    new URL(url);
+    return url;
+  }
+}
+
 function rewriteUrl(href, baseUrl) {
   if (!href || href.startsWith("data:") || href.startsWith("blob:") || href.startsWith("javascript:") || href.startsWith("#") || href.startsWith("mailto:")) {
     return href;
@@ -89,11 +102,6 @@ if ('serviceWorker' in navigator) {
 }
 </script>`;
 
-  if (html.match(/<head[^>]*>/i)) {
-    html = html.replace(/(<head[^>]*>)/i, "$1" + swBlock);
-  } else {
-    html = swBlock + html;
-  }
 
   const injectedScript = `
 <script>
@@ -105,11 +113,31 @@ if ('serviceWorker' in navigator) {
       return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=/g,'');
     } catch(e) { return null; }
   }
+  function dec(input) {
+    try {
+      var b64 = input.replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var bin = atob(b64);
+      return decodeURIComponent(Array.prototype.map.call(bin, function(c) {
+        return '%' + c.charCodeAt(0).toString(16).padStart(2, '0');
+      }).join(''));
+    } catch (e) {
+      return null;
+    }
+  }
+  function currentTargetUrl() {
+    var m = window.location.pathname.match(/^\/proxy\/([^/?#]+)/);
+    if (!m) return null;
+    return dec(m[1]);
+  }
+  var pageTarget = currentTargetUrl();
+  var resolveBase = pageTarget || window.location.href;
+
   function proxyUrl(url, base) {
     if (!url) return url;
     if (url.startsWith('/proxy/') || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) return url;
     try {
-      var abs = new URL(url, base || window.location.href).toString();
+      var abs = new URL(url, base || resolveBase).toString();
       if (abs.startsWith(window.location.origin)) return url;
       var e = enc(abs);
       return e ? '/proxy/' + e : url;
@@ -138,7 +166,10 @@ if ('serviceWorker' in navigator) {
   var _WS = window.WebSocket;
   window.WebSocket = function(url, protocols) {
     try {
-      var abs = new URL(url, window.location.href);
+      var abs = new URL(url, resolveBase);
+      if (abs.origin === window.location.origin && !abs.pathname.startsWith('/proxy/')) {
+        return protocols ? new _WS(url, protocols) : new _WS(url);
+      }
       abs.protocol = abs.protocol === 'wss:' ? 'https:' : 'http:';
       var e = enc(abs.toString());
       if (e) url = window.location.origin + '/proxy/' + e;
@@ -173,9 +204,9 @@ if ('serviceWorker' in navigator) {
 </script>`;
 
   if (html.match(/<head[^>]*>/i)) {
-    html = html.replace(/(<head[^>]*>)/i, "$1" + injectedScript);
+    html = html.replace(/(<head[^>]*>)/i, "$1" + swBlock + injectedScript);
   } else {
-    html = injectedScript + html;
+    html = swBlock + injectedScript + html;
   }
 
   return html;
@@ -204,24 +235,7 @@ function filterHeaders(headers) {
 
 // ─── Route principale : /proxy/<encoded> ─────────────────────────────────────
 
-app.all("/proxy/:encoded(*)", async (req, res) => {
-  let targetUrl;
-  try {
-    targetUrl = decodeTarget(match[1]); // base64url natif (côté serveur)
-    new URL(targetUrl);
-  } catch {
-    try {
-      // Fallback : encodage btoa client (base64 standard avec - et _)
-      const b64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
-      targetUrl = decodeURIComponent(
-        atob(b64).split('').map(c => '%' + c.charCodeAt(0).toString(16).padStart(2,'0')).join('')
-      );
-      new URL(targetUrl);
-    } catch {
-      return socket.destroy();
-    }
-  }
-
+async function proxyToTarget(req, res, targetUrl) {
   try {
     const upstreamHeaders = filterHeaders(req.headers);
     upstreamHeaders["host"] = new URL(targetUrl).host;
@@ -287,6 +301,49 @@ app.all("/proxy/:encoded(*)", async (req, res) => {
       </body></html>
     `);
   }
+}
+
+app.all("/proxy/:encoded(*)", async (req, res) => {
+  let targetUrl;
+  try {
+    targetUrl = decodeTargetLoose(req.params.encoded);
+  } catch {
+    return res.status(400).send("URL invalide.");
+  }
+
+  return proxyToTarget(req, res, targetUrl);
+});
+
+// Fallback: certains scripts front demandent encore /api/*, /text/*, /images/*
+// sur l'origine du proxy; on les rattache au site cible via le Referer proxifie.
+app.all("*", async (req, res, next) => {
+  if (req.path === "/" || req.path === "/api/navigate" || req.path.startsWith("/proxy/")) {
+    return next();
+  }
+
+  const referer = req.get("referer");
+  if (!referer) return next();
+
+  let refererUrl;
+  try {
+    refererUrl = new URL(referer);
+  } catch {
+    return next();
+  }
+
+  const m = refererUrl.pathname.match(/^\/proxy\/([^/?#]+)/);
+  if (!m) return next();
+
+  let pageUrl;
+  try {
+    pageUrl = decodeTargetLoose(m[1]);
+  } catch {
+    return next();
+  }
+
+  const base = new URL(pageUrl).origin;
+  const targetUrl = new URL(req.originalUrl, base).toString();
+  return proxyToTarget(req, res, targetUrl);
 });
 
 // ─── API navigate ─────────────────────────────────────────────────────────────
