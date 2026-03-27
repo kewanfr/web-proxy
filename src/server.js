@@ -175,6 +175,19 @@ function rewriteCss(css, baseUrl) {
 function rewriteHtml(html, baseUrl) {
   html = html.replace(/<base[^>]+>/gi, "");
 
+  // Réécrire explicitement les src de scripts externes avant de protéger le JS inline.
+  html = html.replace(/(<script[^>]*\ssrc\s*=\s*)(['"])([^'"]+)\2([^>]*>)/gi, (m, p1, quote, src, p4) => {
+    return `${p1}${quote}${rewriteUrl(src, baseUrl)}${quote}${p4}`;
+  });
+
+  // Protéger le contenu des scripts inline pour éviter de casser le code JS avec les regex de réécriture HTML.
+  const scriptBlocks = [];
+  html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, (block) => {
+    const token = `__PROXY_SCRIPT_BLOCK_${scriptBlocks.length}__`;
+    scriptBlocks.push(block);
+    return token;
+  });
+
   const attrRegex = /(\s(?:src|href|action|data-src|data-href))\s*=\s*(['"])([^'"]*)\2/gi;
   html = html.replace(attrRegex, (match, attr, quote, val) => {
     const rewritten = rewriteUrl(val, baseUrl);
@@ -194,6 +207,11 @@ function rewriteHtml(html, baseUrl) {
 
   html = html.replace(/(\sstyle)\s*=\s*(['"])([\s\S]*?)\2/gi, (match, attr, quote, css) => {
     return `${attr}=${quote}${rewriteCss(css, baseUrl)}${quote}`;
+  });
+
+  // Restaurer le JS inline original après les réécritures HTML/CSS.
+  scriptBlocks.forEach((block, i) => {
+    html = html.replace(`__PROXY_SCRIPT_BLOCK_${i}__`, block);
   });
 
   // Désactiver les ServiceWorkers
@@ -450,6 +468,8 @@ async function proxyToTarget(req, res, targetUrl) {
       body: hasBody ? req : undefined,
     });
 
+    const rawSetCookies = upstream.headers.raw ? (upstream.headers.raw()["set-cookie"] || []) : [];
+
     if ([301, 302, 303, 307, 308].includes(upstream.status)) {
       const location = upstream.headers.get("location");
       if (location) {
@@ -461,16 +481,22 @@ async function proxyToTarget(req, res, targetUrl) {
     for (const [k, v] of upstream.headers.entries()) {
       const kl = k.toLowerCase();
       if (HOP_BY_HOP.has(kl)) continue;
-      if (kl === "set-cookie") {
-        const cleaned = v
-          .replace(/;\s*secure/gi, "")
-          .replace(/;\s*samesite=[^;]*/gi, "")
-          .replace(/;\s*domain=[^;]*/gi, "");
-        res.append("set-cookie", cleaned);
-        continue;
-      }
+      if (kl === "set-cookie") continue;
       if (kl === "content-security-policy" || kl === "x-frame-options" || kl === "x-content-type-options") continue;
       res.setHeader(k, v);
+    }
+
+    if (rawSetCookies.length) {
+      const isHttpsRequest = Boolean(req.socket && req.socket.encrypted) || req.headers["x-forwarded-proto"] === "https";
+      for (const cookie of rawSetCookies) {
+        let cleaned = cookie.replace(/;\s*domain=[^;]*/gi, "");
+        if (!isHttpsRequest) {
+          cleaned = cleaned
+            .replace(/;\s*secure/gi, "")
+            .replace(/;\s*samesite=[^;]*/gi, "");
+        }
+        res.append("set-cookie", cleaned);
+      }
     }
 
     res.status(upstream.status);
