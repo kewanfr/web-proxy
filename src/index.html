@@ -320,6 +320,7 @@
     <div id="home-sub">Toutes les requêtes transitent par le serveur.</div>
 
     <div id="home-grid">
+      <button class="quick-btn" data-url="https://jklm.fun">jklm.fun</button>
       <button class="quick-btn" data-url="https://wikipedia.org">wikipedia.org</button>
       <button class="quick-btn" data-url="https://github.com">github.com</button>
       <button class="quick-btn" data-url="https://news.ycombinator.com">HackerNews</button>
@@ -468,7 +469,10 @@ function navigate(url, pushState = true) {
 }
 
 function updateNavButtons() {
-  btnBack.disabled    = history_pos <= 0;
+  // Le bouton retour sert aussi de raccourci vers l'accueil quand on est au debut.
+  const atHome = frame.style.display === 'none';
+  btnBack.disabled    = atHome;
+  btnBack.title       = history_pos > 0 ? 'Précédent' : 'Accueil';
   btnForward.disabled = history_pos >= history_stack.length - 1;
 }
 
@@ -521,7 +525,17 @@ btnBack.addEventListener('click', () => {
     history_pos--;
     navigate(history_stack[history_pos], false);
     updateNavButtons();
+    return;
   }
+
+  // S'il n'y a pas d'historique precedent, retour a l'accueil.
+  frame.style.display = 'none';
+  home.style.display = 'flex';
+  dot.className = '';
+  dot.title = 'Prêt';
+  progress.classList.remove('active');
+  progress.style.width = '0%';
+  updateNavButtons();
 });
 
 btnForward.addEventListener('click', () => {
@@ -537,6 +551,8 @@ btnReload.addEventListener('click', () => {
     navigate(history_stack[history_pos], false);
   }
 });
+
+updateNavButtons();
 
 // Focus URL sur Ctrl+L / Cmd+L
 document.addEventListener('keydown', (e) => {
