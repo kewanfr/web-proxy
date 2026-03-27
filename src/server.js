@@ -45,6 +45,19 @@ function decodeTargetLoose(encoded) {
   }
 }
 
+function parseCookies(req) {
+  const raw = req.headers.cookie || "";
+  const out = {};
+  for (const part of raw.split(";")) {
+    const i = part.indexOf("=");
+    if (i === -1) continue;
+    const k = part.slice(0, i).trim();
+    const v = part.slice(i + 1).trim();
+    out[k] = v;
+  }
+  return out;
+}
+
 function rewriteUrl(href, baseUrl) {
   if (!href || href.startsWith("data:") || href.startsWith("blob:") || href.startsWith("javascript:") || href.startsWith("#") || href.startsWith("mailto:")) {
     return href;
@@ -98,7 +111,7 @@ const swBlock = `
 <script>
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
-  Object.defineProperty(navigator, 'serviceWorker', { get: () => ({ register: () => Promise.reject('blocked'), getRegistrations: () => Promise.resolve([]) }) });
+  Object.defineProperty(navigator, 'serviceWorker', { get: () => ({ register: () => Promise.resolve({}), getRegistrations: () => Promise.resolve([]) }) });
 }
 </script>`;
 
@@ -237,13 +250,39 @@ function filterHeaders(headers) {
 
 async function proxyToTarget(req, res, targetUrl) {
   try {
+    const target = new URL(targetUrl);
+    const targetOrigin = target.origin;
+    const encodedOrigin = encodeTarget(targetOrigin);
+    res.setHeader("set-cookie", `__proxy_origin=${encodedOrigin}; Path=/; HttpOnly; SameSite=Lax`);
+
     const upstreamHeaders = filterHeaders(req.headers);
-    upstreamHeaders["host"] = new URL(targetUrl).host;
+    upstreamHeaders["host"] = target.host;
+
+    // Certains backends refusent les POST si Origin/Referer pointent localhost.
+    if (typeof upstreamHeaders.origin === "string") {
+      try {
+        const o = new URL(upstreamHeaders.origin);
+        if (o.host === req.headers.host) upstreamHeaders.origin = targetOrigin;
+      } catch {
+        upstreamHeaders.origin = targetOrigin;
+      }
+    }
+    if (typeof upstreamHeaders.referer === "string") {
+      try {
+        const r = new URL(upstreamHeaders.referer);
+        if (r.host === req.headers.host) upstreamHeaders.referer = targetOrigin + "/";
+      } catch {
+        upstreamHeaders.referer = targetOrigin + "/";
+      }
+    }
+
+    const hasBody = req.method !== "GET" && req.method !== "HEAD";
 
     const upstream = await fetch(targetUrl, {
       method: req.method,
       headers: upstreamHeaders,
       redirect: "manual",
+      body: hasBody ? req : undefined,
     });
 
     if ([301, 302, 303, 307, 308].includes(upstream.status)) {
@@ -260,7 +299,8 @@ async function proxyToTarget(req, res, targetUrl) {
       if (kl === "set-cookie") {
         const cleaned = v
           .replace(/;\s*secure/gi, "")
-          .replace(/;\s*samesite=[^;]*/gi, "");
+          .replace(/;\s*samesite=[^;]*/gi, "")
+          .replace(/;\s*domain=[^;]*/gi, "");
         res.append("set-cookie", cleaned);
         continue;
       }
@@ -322,26 +362,43 @@ app.all("*", async (req, res, next) => {
   }
 
   const referer = req.get("referer");
-  if (!referer) return next();
+  let base;
 
-  let refererUrl;
-  try {
-    refererUrl = new URL(referer);
-  } catch {
-    return next();
+  if (referer) {
+    let refererUrl;
+    try {
+      refererUrl = new URL(referer);
+    } catch {
+      refererUrl = null;
+    }
+
+    if (refererUrl) {
+      const m = refererUrl.pathname.match(/^\/proxy\/([^/?#]+)/);
+      if (m) {
+        try {
+          const pageUrl = decodeTargetLoose(m[1]);
+          base = new URL(pageUrl).origin;
+        } catch {
+          base = undefined;
+        }
+      }
+    }
   }
 
-  const m = refererUrl.pathname.match(/^\/proxy\/([^/?#]+)/);
-  if (!m) return next();
-
-  let pageUrl;
-  try {
-    pageUrl = decodeTargetLoose(m[1]);
-  } catch {
-    return next();
+  if (!base) {
+    const cookies = parseCookies(req);
+    const encodedOrigin = cookies.__proxy_origin;
+    if (encodedOrigin) {
+      try {
+        const origin = decodeTargetLoose(encodedOrigin);
+        base = new URL(origin).origin;
+      } catch {
+        base = undefined;
+      }
+    }
   }
 
-  const base = new URL(pageUrl).origin;
+  if (!base) return next();
   const targetUrl = new URL(req.originalUrl, base).toString();
   return proxyToTarget(req, res, targetUrl);
 });
