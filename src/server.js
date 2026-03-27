@@ -1,8 +1,8 @@
 /**
  * Web Proxy Server - server.js
  * Auto-hébergé, toutes les requêtes passent par ce backend.
- * 
- * Installation : npm install express node-fetch cheerio
+ *
+ * Installation : npm install express node-fetch
  * Lancement    : node server.js
  * Accès        : http://localhost:3000
  */
@@ -11,6 +11,10 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fetch from "node-fetch";
+import http from "http";
+import net from "net";
+import tls from "tls";
+import { URL } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,10 +24,6 @@ const PORT = process.env.PORT || 3000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Encode une URL cible en base64 pour l'embarquer dans les URLs proxifiées.
- * On utilise base64url (sans +, /, =) pour rester URL-safe.
- */
 function encodeTarget(url) {
   return Buffer.from(url).toString("base64url");
 }
@@ -32,10 +32,6 @@ function decodeTarget(encoded) {
   return Buffer.from(encoded, "base64url").toString("utf8");
 }
 
-/**
- * Réécrit une URL absolue ou relative en URL proxy.
- * Format : /proxy/<base64url(absoluteUrl)>
- */
 function rewriteUrl(href, baseUrl) {
   if (!href || href.startsWith("data:") || href.startsWith("blob:") || href.startsWith("javascript:") || href.startsWith("#") || href.startsWith("mailto:")) {
     return href;
@@ -48,16 +44,11 @@ function rewriteUrl(href, baseUrl) {
   }
 }
 
-/**
- * Réécrit les URLs dans du CSS (url(...), @import, etc.)
- */
 function rewriteCss(css, baseUrl) {
-  // url("...") ou url('...') ou url(...)
   css = css.replace(/url\(\s*(['"]?)([^)'"]+)\1\s*\)/gi, (match, quote, href) => {
     const rewritten = rewriteUrl(href.trim(), baseUrl);
     return `url(${quote}${rewritten}${quote})`;
   });
-  // @import "..." ou @import '...'
   css = css.replace(/@import\s+(['"])([^'"]+)\1/gi, (match, quote, href) => {
     const rewritten = rewriteUrl(href.trim(), baseUrl);
     return `@import ${quote}${rewritten}${quote}`;
@@ -65,22 +56,15 @@ function rewriteCss(css, baseUrl) {
   return css;
 }
 
-/**
- * Réécrit les URLs dans du HTML via des regex légères
- * (pour éviter une dépendance lourde à cheerio sur les flux binaires).
- */
 function rewriteHtml(html, baseUrl) {
-  // <base href="..."> → on retire la balise pour ne pas casser nos rewrites
   html = html.replace(/<base[^>]+>/gi, "");
 
-  // Attributs src / href / action / srcset
   const attrRegex = /(\s(?:src|href|action|data-src|data-href))\s*=\s*(['"])([^'"]*)\2/gi;
   html = html.replace(attrRegex, (match, attr, quote, val) => {
     const rewritten = rewriteUrl(val, baseUrl);
     return `${attr}=${quote}${rewritten}${quote}`;
   });
 
-  // srcset="url 1x, url2 2x"
   html = html.replace(/(\ssrcset)\s*=\s*(['"])([^'"]*)\2/gi, (match, attr, quote, val) => {
     const rewritten = val.replace(/([^\s,]+)(\s+\S+)?/g, (part, url, descriptor) => {
       return rewriteUrl(url, baseUrl) + (descriptor || "");
@@ -88,85 +72,91 @@ function rewriteHtml(html, baseUrl) {
     return `${attr}=${quote}${rewritten}${quote}`;
   });
 
-  // <style>...</style>
   html = html.replace(/(<style[^>]*>)([\s\S]*?)(<\/style>)/gi, (match, open, css, close) => {
     return open + rewriteCss(css, baseUrl) + close;
   });
 
-  // style="..." inline
   html = html.replace(/(\sstyle)\s*=\s*(['"])([\s\S]*?)\2/gi, (match, attr, quote, css) => {
     return `${attr}=${quote}${rewriteCss(css, baseUrl)}${quote}`;
   });
 
-  // Injection du script client pour intercepter les navigations dynamiques
   const injectedScript = `
 <script>
 (function() {
+  /* ── Encodage base64url côté client ── */
+  function enc(url) {
+    try {
+      var b = encodeURIComponent(url).replace(/%([0-9A-F]{2})/g, function(_, p){ return String.fromCharCode(parseInt(p,16)); });
+      return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=/g,'');
+    } catch(e) { return null; }
+  }
+  function proxyUrl(url, base) {
+    if (!url) return url;
+    if (url.startsWith('/proxy/') || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) return url;
+    try {
+      var abs = new URL(url, base || window.location.href).toString();
+      if (abs.startsWith(window.location.origin)) return url;
+      var e = enc(abs);
+      return e ? '/proxy/' + e : url;
+    } catch(err) { return url; }
+  }
+
+  /* ── XHR ── */
   var _open = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {
-    if (url && !url.startsWith('/proxy/') && !url.startsWith('/api/') && !url.startsWith('data:') && !url.startsWith('blob:')) {
-      try {
-        var abs = new URL(url, window.location.href).toString();
-        if (!abs.startsWith(window.location.origin)) {
-          url = '/proxy/' + btoa(abs).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-        }
-      } catch(e) {}
-    }
+    arguments[1] = proxyUrl(url);
     return _open.apply(this, arguments);
   };
 
+  /* ── fetch ── */
   var _fetch = window.fetch;
   window.fetch = function(input, init) {
-    var url = (typeof input === 'string') ? input : input.url;
-    if (url && !url.startsWith('/proxy/') && !url.startsWith('/api/') && !url.startsWith('data:') && !url.startsWith('blob:')) {
-      try {
-        var abs = new URL(url, window.location.href).toString();
-        if (!abs.startsWith(window.location.origin)) {
-          var encoded = btoa(abs).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-          if (typeof input === 'string') input = '/proxy/' + encoded;
-          else input = new Request('/proxy/' + encoded, input);
-        }
-      } catch(e) {}
+    if (typeof input === 'string') input = proxyUrl(input);
+    else if (input instanceof Request) {
+      var pu = proxyUrl(input.url);
+      if (pu !== input.url) input = new Request(pu, input);
     }
     return _fetch.call(window, input, init);
   };
 
-  // Intercepte les clics pour réécrire les navigations
+  /* ── WebSocket ── */
+  var _WS = window.WebSocket;
+  window.WebSocket = function(url, protocols) {
+    try {
+      var abs = new URL(url, window.location.href);
+      abs.protocol = abs.protocol === 'wss:' ? 'https:' : 'http:';
+      var e = enc(abs.toString());
+      if (e) url = window.location.origin + '/proxy/' + e;
+    } catch(err) {}
+    return protocols ? new _WS(url, protocols) : new _WS(url);
+  };
+  window.WebSocket.prototype = _WS.prototype;
+  window.WebSocket.CONNECTING = _WS.CONNECTING;
+  window.WebSocket.OPEN       = _WS.OPEN;
+  window.WebSocket.CLOSING    = _WS.CLOSING;
+  window.WebSocket.CLOSED     = _WS.CLOSED;
+
+  /* ── Clics sur liens ── */
   document.addEventListener('click', function(e) {
-    var a = e.target.closest('a');
+    var a = e.target.closest('a[href]');
     if (!a) return;
     var href = a.getAttribute('href');
-    if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('/proxy/')) return;
-    try {
-      var abs = new URL(href, window.location.href).toString();
-      if (!abs.startsWith(window.location.origin)) {
-        e.preventDefault();
-        var encoded = btoa(abs).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-        window.location.href = '/proxy/' + encoded;
-      }
-    } catch(e2) {}
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+    var pu = proxyUrl(href);
+    if (pu !== href) { e.preventDefault(); window.location.href = pu; }
   }, true);
 
-  // Intercepte history.pushState / replaceState
-  ['pushState', 'replaceState'].forEach(function(method) {
-    var orig = history[method];
-    history[method] = function(state, title, url) {
-      if (url && !url.startsWith('/proxy/') && !url.startsWith('/') ) {
-        try {
-          var abs = new URL(url, window.location.href).toString();
-          if (!abs.startsWith(window.location.origin)) {
-            var encoded = btoa(abs).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-            url = '/proxy/' + encoded;
-          }
-        } catch(e) {}
-      }
-      return orig.call(this, state, title, url);
+  /* ── history ── */
+  ['pushState','replaceState'].forEach(function(m) {
+    var orig = history[m];
+    history[m] = function(st, ti, url) {
+      if (url) url = proxyUrl(url);
+      return orig.call(this, st, ti, url);
     };
   });
 })();
 </script>`;
 
-  // Injecter juste après <head> ou avant </head>
   if (html.match(/<head[^>]*>/i)) {
     html = html.replace(/(<head[^>]*>)/i, "$1" + injectedScript);
   } else {
@@ -176,14 +166,13 @@ function rewriteHtml(html, baseUrl) {
   return html;
 }
 
-// ─── Headers à filtrer (hop-by-hop) ──────────────────────────────────────────
-
+// ─── Headers ─────────────────────────────────────────────────────────────────
 
 const HOP_BY_HOP = new Set([
   "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
   "te", "trailers", "transfer-encoding", "upgrade",
   "host", "content-length",
-  "content-encoding",   // ← ajouter cette ligne
+  "content-encoding",
 ]);
 
 function filterHeaders(headers) {
@@ -191,10 +180,10 @@ function filterHeaders(headers) {
   for (const [k, v] of Object.entries(headers)) {
     const kl = k.toLowerCase();
     if (HOP_BY_HOP.has(kl)) continue;
-    if (kl === "accept-encoding") continue;  // ← ajouter
+    if (kl === "accept-encoding") continue;
     result[k] = v;
   }
-  result["accept-encoding"] = "gzip, deflate, br";  // ← ajouter
+  result["accept-encoding"] = "gzip, deflate, br";
   return result;
 }
 
@@ -204,7 +193,7 @@ app.get("/proxy/:encoded(*)", async (req, res) => {
   let targetUrl;
   try {
     targetUrl = decodeTarget(req.params.encoded);
-    new URL(targetUrl); // validation
+    new URL(targetUrl);
   } catch {
     return res.status(400).send("URL invalide.");
   }
@@ -217,10 +206,8 @@ app.get("/proxy/:encoded(*)", async (req, res) => {
       method: req.method,
       headers: upstreamHeaders,
       redirect: "manual",
-      // body: (req.method !== 'GET' && req.method !== 'HEAD') ? req : undefined,
     });
 
-    // Gestion des redirections : on réécrit Location
     if ([301, 302, 303, 307, 308].includes(upstream.status)) {
       const location = upstream.headers.get("location");
       if (location) {
@@ -229,12 +216,10 @@ app.get("/proxy/:encoded(*)", async (req, res) => {
       }
     }
 
-    // Copie des headers de réponse (sauf hop-by-hop + cookies tiers)
     for (const [k, v] of upstream.headers.entries()) {
       const kl = k.toLowerCase();
       if (HOP_BY_HOP.has(kl)) continue;
       if (kl === "set-cookie") {
-        // Transmettre les cookies mais retirer Secure/SameSite pour fonctionner en HTTP local
         const cleaned = v
           .replace(/;\s*secure/gi, "")
           .replace(/;\s*samesite=[^;]*/gi, "");
@@ -249,9 +234,7 @@ app.get("/proxy/:encoded(*)", async (req, res) => {
 
     const contentType = (upstream.headers.get("content-type") || "").toLowerCase();
     const isHtml = contentType.includes("text/html");
-    const isCss = contentType.includes("text/css");
-    const isJs = contentType.includes("javascript");
-    const isText = contentType.includes("text/");
+    const isCss  = contentType.includes("text/css");
 
     if (isHtml) {
       const html = await upstream.text();
@@ -267,7 +250,6 @@ app.get("/proxy/:encoded(*)", async (req, res) => {
       return res.send(rewritten);
     }
 
-    // Pour tout le reste (images, fonts, JS, JSON, binaires...) → stream direct
     upstream.body.pipe(res);
 
   } catch (err) {
@@ -283,8 +265,7 @@ app.get("/proxy/:encoded(*)", async (req, res) => {
   }
 });
 
-// ─── API : /api/proxy (POST JSON) ────────────────────────────────────────────
-// Utilisé par le frontend pour initier la navigation
+// ─── API navigate ─────────────────────────────────────────────────────────────
 
 app.use(express.json());
 
@@ -300,14 +281,76 @@ app.post("/api/navigate", (req, res) => {
   res.json({ redirect: "/proxy/" + encodeTarget(url) });
 });
 
-// ─── Interface HTML principale ────────────────────────────────────────────────
+// ─── Frontend ─────────────────────────────────────────────────────────────────
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// ─── Lancement ────────────────────────────────────────────────────────────────
+// ─── Serveur HTTP + WebSocket upgrade ────────────────────────────────────────
 
-app.listen(PORT, () => {
+const server = http.createServer(app);
+
+server.on("upgrade", (req, socket, head) => {
+  const match = req.url.match(/^\/proxy\/(.+)$/);
+  if (!match) return socket.destroy();
+
+  let targetUrl;
+  try {
+    targetUrl = decodeTarget(match[1]);
+    new URL(targetUrl);
+  } catch {
+    return socket.destroy();
+  }
+
+  // Convertir https/http → wss/ws
+  const wsUrl = new URL(targetUrl);
+  wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
+
+  const isSecure = wsUrl.protocol === "wss:";
+  const port = parseInt(wsUrl.port) || (isSecure ? 443 : 80);
+  const host = wsUrl.hostname;
+  const upgradePath = wsUrl.pathname + wsUrl.search;
+
+  // Reconstruire les headers upstream
+  const skipHeaders = new Set(["host", "origin"]);
+  const headerLines = Object.entries(req.headers)
+    .filter(([k]) => !skipHeaders.has(k.toLowerCase()))
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\r\n");
+
+  const connectAndUpgrade = (targetSocket) => {
+    targetSocket.on("connect", () => {
+      targetSocket.write(
+        `GET ${upgradePath} HTTP/1.1\r\n` +
+        `Host: ${host}\r\n` +
+        `${headerLines}\r\n` +
+        `\r\n`
+      );
+      if (head && head.length) targetSocket.write(head);
+
+      socket.pipe(targetSocket);
+      targetSocket.pipe(socket);
+
+      socket.on("error", () => targetSocket.destroy());
+      targetSocket.on("error", () => socket.destroy());
+      socket.on("close", () => targetSocket.destroy());
+      targetSocket.on("close", () => socket.destroy());
+    });
+
+    targetSocket.on("error", (err) => {
+      console.error("[WS ERROR]", err.message);
+      socket.destroy();
+    });
+  };
+
+  if (isSecure) {
+    connectAndUpgrade(tls.connect({ host, port, servername: host }));
+  } else {
+    connectAndUpgrade(net.connect({ host, port }));
+  }
+});
+
+server.listen(PORT, () => {
   console.log(`\n🔒 Web Proxy démarré sur http://localhost:${PORT}\n`);
 });
