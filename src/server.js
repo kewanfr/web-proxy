@@ -21,6 +21,13 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const clientContext = new Map();
+
+function getClientKey(req) {
+  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+  const ua = req.headers["user-agent"] || "unknown";
+  return `${ip}|${ua}`;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -254,6 +261,7 @@ async function proxyToTarget(req, res, targetUrl) {
     const targetOrigin = target.origin;
     const encodedOrigin = encodeTarget(targetOrigin);
     res.setHeader("set-cookie", `__proxy_origin=${encodedOrigin}; Path=/; HttpOnly; SameSite=Lax`);
+    clientContext.set(getClientKey(req), targetOrigin);
 
     const upstreamHeaders = filterHeaders(req.headers);
     upstreamHeaders["host"] = target.host;
@@ -398,6 +406,10 @@ app.all("*", async (req, res, next) => {
     }
   }
 
+  if (!base) {
+    base = clientContext.get(getClientKey(req));
+  }
+
   if (!base) return next();
   const targetUrl = new URL(req.originalUrl, base).toString();
   return proxyToTarget(req, res, targetUrl);
@@ -415,6 +427,14 @@ app.post("/api/navigate", (req, res) => {
     new URL(url);
   } catch {
     return res.status(400).json({ error: "URL invalide" });
+  }
+  try {
+    const origin = new URL(url).origin;
+    const encodedOrigin = encodeTarget(origin);
+    res.setHeader("set-cookie", `__proxy_origin=${encodedOrigin}; Path=/; HttpOnly; SameSite=Lax`);
+    clientContext.set(getClientKey(req), origin);
+  } catch {
+    // no-op
   }
   res.json({ redirect: "/proxy/" + encodeTarget(url) });
 });

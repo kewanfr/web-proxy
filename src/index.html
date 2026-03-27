@@ -297,7 +297,8 @@
   </button>
 
   <div id="url-wrap">
-    <span id="shield">
+    <!-- return to home on click -->
+    <span id="shield" onclick="window.location.href = '/';">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
     </span>
     <input id="url-input" type="text" placeholder="Entrer une URL ou un mot-clé..." autocomplete="off" spellcheck="false" />
@@ -359,6 +360,25 @@ function encodeB64(str) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
+function decodeB64(token) {
+  try {
+    const b64 = token.replace(/-/g, '+').replace(/_/g, '/');
+    const bin = atob(b64);
+    return decodeURIComponent(Array.prototype.map.call(bin, c => {
+      return '%' + c.charCodeAt(0).toString(16).padStart(2, '0');
+    }).join(''));
+  } catch {
+    return null;
+  }
+}
+
+function rememberCurrentUrl(url) {
+  try {
+    localStorage.setItem('proxy:lastUrl', url);
+    history.replaceState(null, '', '/#' + encodeURIComponent(url));
+  } catch {}
+}
+
 // ── Résolution de l'URL saisie ───────────────────────────────────
 function resolveInput(raw) {
   const trimmed = raw.trim();
@@ -376,7 +396,7 @@ function resolveInput(raw) {
 // ── Navigation principale ────────────────────────────────────────
 function navigate(url, pushState = true) {
   if (!url) return;
-  const proxyPath = '/proxy/' + btoa(url).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  const proxyPath = '/proxy/' + encodeB64(url);
   
   // Afficher la barre de progression
   progress.style.width = '0%';
@@ -396,6 +416,7 @@ function navigate(url, pushState = true) {
 
   // Mettre à jour l'input
   urlInput.value = url;
+  rememberCurrentUrl(url);
 
   // Historique interne
   if (pushState) {
@@ -422,14 +443,15 @@ function navigate(url, pushState = true) {
         // Décoder l'URL proxy pour afficher l'URL réelle
         const m = iUrl.match(/\/proxy\/([^?#]+)/);
         if (m) {
-          try {
-            const decoded = atob(m[1].replace(/-/g,'+').replace(/_/g,'/'));
+          const decoded = decodeB64(m[1]);
+          if (decoded) {
             urlInput.value = decoded;
+            rememberCurrentUrl(decoded);
             // Sync historique
             if (pushState) {
               history_stack[history_pos] = decoded;
             }
-          } catch {}
+          }
         }
       }
     } catch {}
@@ -467,16 +489,15 @@ setInterval(() => {
       lastFrameUrl = href;
       const m = href.match(/\/proxy\/([^?#\s]+)/);
       if (m) {
-        try {
-          const decoded = atob(m[1].replace(/-/g,'+').replace(/_/g,'/'));
-          if (decoded !== history_stack[history_pos]) {
-            urlInput.value = decoded;
-            history_stack = history_stack.slice(0, history_pos + 1);
-            history_stack.push(decoded);
-            history_pos++;
-            updateNavButtons();
-          }
-        } catch {}
+        const decoded = decodeB64(m[1]);
+        if (decoded && decoded !== history_stack[history_pos]) {
+          urlInput.value = decoded;
+          rememberCurrentUrl(decoded);
+          history_stack = history_stack.slice(0, history_pos + 1);
+          history_stack.push(decoded);
+          history_pos++;
+          updateNavButtons();
+        }
       }
     }
   } catch {}
@@ -530,6 +551,21 @@ document.addEventListener('keydown', (e) => {
 document.querySelectorAll('.quick-btn').forEach(btn => {
   btn.addEventListener('click', () => navigate(btn.dataset.url));
 });
+
+// Restore last location after full page reload
+(() => {
+  let initial = null;
+  if (location.hash && location.hash.length > 1) {
+    try { initial = decodeURIComponent(location.hash.slice(1)); } catch {}
+  }
+  if (!initial) {
+    try { initial = localStorage.getItem('proxy:lastUrl'); } catch {}
+  }
+  if (initial) {
+    const resolved = resolveInput(initial);
+    if (resolved) navigate(resolved, true);
+  }
+})();
 </script>
 </body>
 </html>
