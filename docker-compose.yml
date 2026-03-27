@@ -10,12 +10,17 @@ services:
       # Port exposé sur l'hôte → ton reverse proxy pointera ici
       # Modifie le côté gauche si nécessaire (ex: "8080:3000")
       - "${HOST_PORT:-3000}:3000"
+      # Optionnel: exposer aussi le port HTTP de redirection
+      # - "${HOST_PORT_HTTP:-80}:${HTTP_REDIRECT_PORT:-80}"
 
     environment:
       # Port interne Node.js (ne pas changer sauf si tu modifies le Dockerfile)
       PORT: 3000
       NODE_ENV: production
       HTTPS_ENABLED: ${HTTPS_ENABLED:-false}
+      HTTP_REDIRECT_ENABLED: ${HTTP_REDIRECT_ENABLED:-true}
+      HTTP_REDIRECT_PORT: ${HTTP_REDIRECT_PORT:-80}
+      HTTPS_PUBLIC_PORT: ${HTTPS_PUBLIC_PORT:-443}
       SSL_KEY_PATH: ${SSL_KEY_PATH:-/certs/privkey.pem}
       SSL_CERT_PATH: ${SSL_CERT_PATH:-/certs/fullchain.pem}
       SSL_CA_PATH: ${SSL_CA_PATH:-}

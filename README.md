@@ -111,6 +111,26 @@ Accès : `https://localhost:3000`
 
 Remarque: avec un certificat auto-signé, le navigateur affichera un avertissement de sécurité.
 
+### Redirection HTTP vers HTTPS
+
+Quand `HTTPS_ENABLED=true`, le proxy peut aussi ouvrir un port HTTP dédié qui redirige en `308` vers HTTPS.
+
+Dans `.env` :
+
+```bash
+HTTP_REDIRECT_ENABLED=true
+HTTP_REDIRECT_PORT=80
+HTTPS_PUBLIC_PORT=443
+```
+
+Et dans `docker-compose.yml`, expose aussi le port HTTP si nécessaire :
+
+```yaml
+ports:
+  - "443:3000"
+  - "80:80"
+```
+
 ### Obtenir un certificat Let's Encrypt avec Certbot
 
 Commande simple (méthode standalone) :
