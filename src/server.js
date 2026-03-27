@@ -189,10 +189,12 @@ const HOP_BY_HOP = new Set([
 function filterHeaders(headers) {
   const result = {};
   for (const [k, v] of Object.entries(headers)) {
-    if (!HOP_BY_HOP.has(k.toLowerCase())) {
-      result[k] = v;
-    }
+    const kl = k.toLowerCase();
+    if (HOP_BY_HOP.has(kl)) continue;
+    if (kl === "accept-encoding") continue;  // ← ajouter
+    result[k] = v;
   }
+  result["accept-encoding"] = "gzip, deflate, br";  // ← ajouter
   return result;
 }
 
