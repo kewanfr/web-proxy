@@ -312,6 +312,31 @@ if ('serviceWorker' in navigator) {
     return _setAttribute.call(this, name, value);
   };
 
+  function patchUrlProperty(proto, prop, transform) {
+    if (!proto) return;
+    var d = Object.getOwnPropertyDescriptor(proto, prop);
+    if (!d || !d.set || !d.get || !d.configurable) return;
+    Object.defineProperty(proto, prop, {
+      configurable: true,
+      enumerable: d.enumerable,
+      get: function() { return d.get.call(this); },
+      set: function(v) {
+        try {
+          if (typeof v === 'string') v = transform(v);
+        } catch (e) {}
+        return d.set.call(this, v);
+      }
+    });
+  }
+
+  patchUrlProperty(HTMLImageElement && HTMLImageElement.prototype, 'src', function(v){ return proxyUrl(v); });
+  patchUrlProperty(HTMLScriptElement && HTMLScriptElement.prototype, 'src', function(v){ return proxyUrl(v); });
+  patchUrlProperty(HTMLIFrameElement && HTMLIFrameElement.prototype, 'src', function(v){ return proxyUrl(v); });
+  patchUrlProperty(HTMLLinkElement && HTMLLinkElement.prototype, 'href', function(v){ return proxyUrl(v); });
+  patchUrlProperty(HTMLAnchorElement && HTMLAnchorElement.prototype, 'href', function(v){ return proxyUrl(v); });
+  patchUrlProperty(HTMLFormElement && HTMLFormElement.prototype, 'action', function(v){ return proxyUrl(v); });
+  patchUrlProperty(HTMLMediaElement && HTMLMediaElement.prototype, 'src', function(v){ return proxyUrl(v); });
+
   /* ── XHR ── */
   var _open = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {
@@ -329,6 +354,23 @@ if ('serviceWorker' in navigator) {
     }
     return _fetch.call(window, input, init);
   };
+
+  /* ── EventSource ── */
+  var _EventSource = window.EventSource;
+  if (_EventSource) {
+    window.EventSource = function(url, config) {
+      return new _EventSource(proxyUrl(url), config);
+    };
+    window.EventSource.prototype = _EventSource.prototype;
+  }
+
+  /* ── sendBeacon ── */
+  if (navigator && navigator.sendBeacon) {
+    var _sendBeacon = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = function(url, data) {
+      return _sendBeacon(proxyUrl(url), data);
+    };
+  }
 
   /* ── WebSocket ── */
   var _WS = window.WebSocket;
@@ -349,6 +391,13 @@ if ('serviceWorker' in navigator) {
   window.WebSocket.OPEN       = _WS.OPEN;
   window.WebSocket.CLOSING    = _WS.CLOSING;
   window.WebSocket.CLOSED     = _WS.CLOSED;
+
+  /* ── window.open ── */
+  var _openWindow = window.open;
+  window.open = function(url, name, specs) {
+    if (typeof url === 'string') url = proxyUrl(url);
+    return _openWindow.call(window, url, name, specs);
+  };
 
   /* ── Clics sur liens ── */
   document.addEventListener('click', function(e) {
