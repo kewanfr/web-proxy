@@ -189,6 +189,95 @@ function rewriteCss(css, baseUrl) {
   return css;
 }
 
+function getWorkerBootstrap() {
+  return `;(() => {
+  function enc(url) {
+    try {
+      var b = encodeURIComponent(url).replace(/%([0-9A-F]{2})/g, function(_, p){ return String.fromCharCode(parseInt(p,16)); });
+      return btoa(b).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+    } catch(e) { return null; }
+  }
+  function dec(input) {
+    try {
+      var b64 = input.replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var bin = atob(b64);
+      return decodeURIComponent(Array.prototype.map.call(bin, function(c) {
+        return '%' + c.charCodeAt(0).toString(16).padStart(2, '0');
+      }).join(''));
+    } catch (e) {
+      return null;
+    }
+  }
+  function currentTargetUrl() {
+    var m = self.location.pathname.match(/^\\/proxy\\/([^/?#]+)/);
+    if (!m) return null;
+    return dec(m[1]);
+  }
+  var baseTarget = currentTargetUrl() || self.location.href;
+
+  function proxyUrl(url) {
+    if (!url || typeof url !== 'string') return url;
+    if (url.startsWith('/proxy/') || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('javascript:')) return url;
+    try {
+      var abs = new URL(url, baseTarget);
+      if (abs.origin === self.location.origin && abs.pathname.startsWith('/proxy/')) {
+        return abs.toString();
+      }
+      if (abs.protocol === 'ws:') abs.protocol = 'http:';
+      if (abs.protocol === 'wss:') abs.protocol = 'https:';
+      var e = enc(abs.toString());
+      return e ? self.location.origin + '/proxy/' + e : url;
+    } catch (e) {
+      return url;
+    }
+  }
+
+  if (typeof self.fetch === 'function') {
+    var _fetch = self.fetch;
+    self.fetch = function(input, init) {
+      if (typeof input === 'string') input = proxyUrl(input);
+      else if (input && typeof input.url === 'string') {
+        var pu = proxyUrl(input.url);
+        if (typeof Request !== 'undefined' && pu !== input.url) input = new Request(pu, input);
+      }
+      return _fetch.call(self, input, init);
+    };
+  }
+
+  if (typeof XMLHttpRequest !== 'undefined') {
+    var _open = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+      arguments[1] = proxyUrl(url);
+      return _open.apply(this, arguments);
+    };
+  }
+
+  if (typeof self.WebSocket === 'function') {
+    var _WS = self.WebSocket;
+    self.WebSocket = function(url, protocols) {
+      try {
+        var abs = new URL(url, baseTarget);
+        if (abs.protocol === 'ws:') abs.protocol = 'http:';
+        if (abs.protocol === 'wss:') abs.protocol = 'https:';
+        var e = enc(abs.toString());
+        if (e) url = self.location.origin + '/proxy/' + e;
+      } catch (e) {}
+      return protocols ? new _WS(url, protocols) : new _WS(url);
+    };
+    self.WebSocket.prototype = _WS.prototype;
+  }
+
+  if (typeof self.importScripts === 'function') {
+    var _importScripts = self.importScripts;
+    self.importScripts = function() {
+      var args = Array.prototype.map.call(arguments, function(u) { return proxyUrl(String(u)); });
+      return _importScripts.apply(self, args);
+    };
+  }
+})();\n`;
+}
+
 function rewriteHtml(html, baseUrl) {
   html = html.replace(/<base[^>]+>/gi, "");
 
@@ -270,6 +359,17 @@ if ('serviceWorker' in navigator) {
   }
   var pageTarget = currentTargetUrl();
   var resolveBase = pageTarget || window.location.href;
+
+  function markWorkerProxy(url) {
+    try {
+      var u = new URL(url, window.location.origin);
+      if (u.pathname.startsWith('/proxy/')) {
+        u.searchParams.set('__proxy_worker', '1');
+        return u.toString();
+      }
+    } catch (e) {}
+    return url;
+  }
 
   function proxyUrl(url, base) {
     if (!url) return url;
@@ -412,7 +512,8 @@ if ('serviceWorker' in navigator) {
       if (abs.origin === window.location.origin && !abs.pathname.startsWith('/proxy/') && pageTarget) {
         abs = new URL(abs.pathname + abs.search + abs.hash, pageTarget);
       }
-      abs.protocol = abs.protocol === 'wss:' ? 'https:' : 'http:';
+      if (abs.protocol === 'ws:') abs.protocol = 'http:';
+      if (abs.protocol === 'wss:') abs.protocol = 'https:';
       var e = enc(abs.toString());
       if (e) url = window.location.origin + '/proxy/' + e;
     } catch(err) {}
@@ -423,6 +524,35 @@ if ('serviceWorker' in navigator) {
   window.WebSocket.OPEN       = _WS.OPEN;
   window.WebSocket.CLOSING    = _WS.CLOSING;
   window.WebSocket.CLOSED     = _WS.CLOSED;
+
+  /* ── Worker / SharedWorker ── */
+  var _Worker = window.Worker;
+  if (_Worker) {
+    window.Worker = function(url, options) {
+      try {
+        var u = (typeof url === 'string') ? url : String(url);
+        u = markWorkerProxy(proxyUrl(u));
+        return new _Worker(u, options);
+      } catch (e) {
+        return new _Worker(url, options);
+      }
+    };
+    window.Worker.prototype = _Worker.prototype;
+  }
+
+  var _SharedWorker = window.SharedWorker;
+  if (_SharedWorker) {
+    window.SharedWorker = function(url, optionsOrName) {
+      try {
+        var u = (typeof url === 'string') ? url : String(url);
+        u = markWorkerProxy(proxyUrl(u));
+        return new _SharedWorker(u, optionsOrName);
+      } catch (e) {
+        return new _SharedWorker(url, optionsOrName);
+      }
+    };
+    window.SharedWorker.prototype = _SharedWorker.prototype;
+  }
 
   /* ── window.open ── */
   var _openWindow = window.open;
@@ -588,6 +718,7 @@ async function proxyToTarget(req, res, targetUrl) {
     const contentType = (upstream.headers.get("content-type") || "").toLowerCase();
     const isHtml = contentType.includes("text/html");
     const isCss  = contentType.includes("text/css");
+    const isJs = contentType.includes("javascript") || contentType.includes("ecmascript") || contentType.includes("application/x-javascript");
 
     if (isHtml) {
       const html = await upstream.text();
@@ -601,6 +732,21 @@ async function proxyToTarget(req, res, targetUrl) {
       const rewritten = rewriteCss(css, targetUrl);
       res.setHeader("content-type", contentType);
       return res.send(rewritten);
+    }
+
+    if (isJs) {
+      const js = await upstream.text();
+      if (req.query && req.query.__proxy_worker === "1") {
+        const withBootstrap = getWorkerBootstrap() + js;
+        if (!contentType) {
+          res.setHeader("content-type", "application/javascript; charset=utf-8");
+        }
+        return res.send(withBootstrap);
+      }
+      if (!contentType) {
+        res.setHeader("content-type", "application/javascript; charset=utf-8");
+      }
+      return res.send(js);
     }
 
     upstream.body.pipe(res);
